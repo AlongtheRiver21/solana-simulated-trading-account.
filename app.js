@@ -1,10 +1,12 @@
 'use strict';
 // No exchange connections, blockchain calls, private keys, or real transactions.
-const KEY='standalone-demo-trading-v1', BASE={DEMO:.0001,MOON:.002,TUCK:.00005};
+const KEY='standalone-demo-trading-v1', AUTO_SELL_KEY='standalone-demo-auto-sell-v1', BASE={DEMO:.0001,MOON:.002,TUCK:.00005};
 const fresh=()=>({cash:500,realized:0,day:new Date().toDateString(),dayEquity:500,prices:{...BASE},positions:{},journal:[]});
 let state;
 try{state=JSON.parse(localStorage.getItem(KEY))||fresh();if(!state.prices||!state.positions||!Array.isArray(state.journal))throw Error('Invalid');}catch{state=fresh();}
 let timer=null, autoTrading=false, autoBuys=0, lastAutoExit=0;
+// Exit-only mode is enabled by default and remembered independently from auto-buy.
+let autoSellEnabled=localStorage.getItem(AUTO_SELL_KEY)!=='off';
 const AUTO_BUY_LIMIT=10, AUTO_COOLDOWN_MS=30000;
 const el=id=>document.getElementById(id),gbp=n=>'£'+Number(n).toFixed(2),usd=n=>'$'+Number(n).toFixed(8);
 const equity=()=>state.cash+Object.keys(state.positions).reduce((a,s)=>a+state.positions[s].qty*state.prices[s],0);
@@ -16,15 +18,26 @@ function message(s){el('message').textContent=s;}
 function sell(s,reason){const p=state.positions[s];if(!p){message('No open position for '+s);return;}const proceeds=p.qty*state.prices[s]*.995,pnl=proceeds-p.cost;state.cash+=proceeds;state.realized+=pnl;delete state.positions[s];record('SELL',s,`${reason}: proceeds ${gbp(proceeds)}, P/L ${gbp(pnl)}`,pnl);message(`${s} sold: ${gbp(pnl)} simulated P/L`);render();}
 function buy(){dayCheck();const s=el('token').value,amount=Number(el('amount').value);if(!Number.isFinite(amount)||amount<1){message('Enter an amount of at least £1.');return;}if(lossToday()<=-state.dayEquity*.04){message('Blocked: daily realised-loss limit reached.');return;}if(state.positions[s]){message('Already holding this token.');return;}if(amount>state.cash){message('Not enough virtual cash.');return;}if(amount>equity()*.4){message('Blocked: 40% maximum per position.');return;}const entry=state.prices[s]*1.005;state.positions[s]={qty:amount/entry,cost:amount,entry};state.cash-=amount;record('BUY',s,`${gbp(amount)} at ${usd(entry)} (0.5% simulated slippage)`);message('Virtual purchase recorded.');render();}
 function stopAutoTrading(reason){autoTrading=false;el('autoTrade').textContent='Start auto trading';message(reason);}
+function showAutoSellStatus(){
+  el('autoSell').textContent=autoSellEnabled?'Disable auto-sell':'Enable auto-sell';
+  el('sellStatus').textContent=autoSellEnabled
+    ? 'AUTO-SELL ON: close an open position at −6% price stop or +10% price target. No new purchases from this control. Works only when test prices are moving on this open page.'
+    : 'AUTO-SELL OFF: only manual sales. To resume automatic exits, tap Enable auto-sell.';
+}
+function checkAutoExits(){
+  if(!autoSellEnabled)return;
+  for(const [s,p] of Object.entries(state.positions)){
+    if(state.prices[s]<=p.entry*.94){sell(s,'AUTO STOP LOSS −6%');lastAutoExit=Date.now();}
+    else if(state.prices[s]>=p.entry*1.10){sell(s,'AUTO TAKE PROFIT +10%');lastAutoExit=Date.now();}
+  }
+}
+
 function tick(){
   dayCheck();
   for(const s of Object.keys(state.prices)){
     state.prices[s]=Math.max(BASE[s]*.05,state.prices[s]*(1+(Math.random()-.52)*.08));
   }
-  for(const [s,p] of Object.entries(state.positions)){
-    if(state.prices[s]<=p.entry*.94){sell(s,'STOP LOSS');lastAutoExit=Date.now();}
-    else if(autoTrading && state.prices[s]>=p.entry*1.10){sell(s,'AUTO TAKE PROFIT +10%');lastAutoExit=Date.now();}
-  }
+  checkAutoExits();
   if(autoTrading && Object.keys(state.positions).length===0 && Date.now()-lastAutoExit>=AUTO_COOLDOWN_MS){
     const amount=Number(el('amount').value);
     if(autoBuys>=AUTO_BUY_LIMIT){stopAutoTrading('Auto trading ended after 10 demo buys.');}
@@ -42,6 +55,14 @@ function tick(){
   }
   render();
 }
+el('autoSell').onclick=()=>{
+  autoSellEnabled=!autoSellEnabled;
+  localStorage.setItem(AUTO_SELL_KEY,autoSellEnabled?'on':'off');
+  showAutoSellStatus();
+  message(autoSellEnabled?'Automatic exits enabled for open DEMO positions.':'Automatic exits paused.');
+  if(autoSellEnabled)checkAutoExits();
+  render();
+};
 el('buy').onclick=buy;el('sell').onclick=()=>sell(el('token').value,'MANUAL');el('tick').onclick=tick;el('token').onchange=render;
 el('auto').onclick=()=>{if(timer){clearInterval(timer);timer=null;if(autoTrading)stopAutoTrading('Auto trading stopped with auto prices.');el('auto').textContent='Start auto prices';message('Auto simulation stopped.');}else{timer=setInterval(tick,3000);el('auto').textContent='Stop auto prices';message('Fictional prices changing every 3 seconds while this page stays open.');}};
 el('autoTrade').onclick=()=>{
@@ -57,4 +78,5 @@ el('autoTrade').onclick=()=>{
   tick();
 };
 el('reset').onclick=()=>{if(confirm('Reset practice balance, open positions and journal?')){state=fresh();autoBuys=0;if(autoTrading)stopAutoTrading('Auto trading stopped on reset.');message('Account reset to £500.');render();}};
+showAutoSellStatus();
 render();
